@@ -49,29 +49,61 @@ class TechnicalIndicators:
         sar_trend_up = sar < close
         sar_trend_down = sar > close
 
-        sar_trend_up_series = pd.Series(sar_trend_up, index=df.index)
-        sar_trend_down_series = pd.Series(sar_trend_down, index=df.index)
+        sar_trend_up_series = pd.Series(sar_trend_up, index=df.index, dtype="bool")
+        sar_trend_down_series = pd.Series(sar_trend_down, index=df.index, dtype="bool")
+
+        # Helper to detect fresh trend change without FutureWarnings
+        prev_up = sar_trend_up_series.shift(1, fill_value=False)
+        prev_down = sar_trend_down_series.shift(1, fill_value=False)
 
         if strategy_mode == 'contrarian':
-            sar_long_signal = sar_trend_down_series & (
-                ~sar_trend_down_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
-            sar_short_signal = sar_trend_up_series & (
-                ~sar_trend_up_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
-            long_exit = sar_trend_up_series & (
-                ~sar_trend_up_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
-            short_exit = sar_trend_down_series & (
-                ~sar_trend_down_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
+            sar_long_signal = sar_trend_down_series & (~prev_down)
+            sar_short_signal = sar_trend_up_series & (~prev_up)
+            long_exit = sar_trend_up_series & (~prev_up)
+            short_exit = sar_trend_down_series & (~prev_down)
         else:
-            sar_long_signal = sar_trend_up_series & (
-                ~sar_trend_up_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
-            sar_short_signal = sar_trend_down_series & (
-                ~sar_trend_down_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
-            long_exit = sar_trend_down_series & (
-                ~sar_trend_down_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
-            short_exit = sar_trend_up_series & (
-                ~sar_trend_up_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
+            sar_long_signal = sar_trend_up_series & (~prev_up)
+            sar_short_signal = sar_trend_down_series & (~prev_down)
+            long_exit = sar_trend_down_series & (~prev_down)
+            short_exit = sar_trend_up_series & (~prev_up)
 
-        if strategy_mode in ['optimized', 'trend_following', 'high_winrate']:
+        # ------------------------------------------------------------------
+        # Дополнительный тренд-фильтр: MACD на часовом таймфрейме
+        # ------------------------------------------------------------------
+        # Формируем часовые свечи из исходных данных
+        df_h1 = df[['open', 'high', 'low', 'close']].resample('1H').agg({
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last'
+        }).dropna()
+
+        if not df_h1.empty:
+            macd_h1, macd_signal_h1, macd_hist_h1 = talib.MACD(df_h1['close'].values)
+            df_h1['macd_1h'] = macd_h1
+            df_h1['macd_signal_1h'] = macd_signal_h1
+            df_h1['macd_hist_1h'] = macd_hist_h1
+            df_h1 = df_h1[['macd_1h', 'macd_signal_1h', 'macd_hist_1h']]
+            # Привязываем часовые значения к исходному 15-минутному датафрейму
+            h1_aligned = df_h1.reindex(df.index, method='ffill')
+            macd_1h = h1_aligned['macd_1h'].values
+            macd_signal_1h = h1_aligned['macd_signal_1h'].values
+            macd_hist_1h = h1_aligned['macd_hist_1h'].values
+        else:
+            # fallback если часовой фрейм недоступен
+            macd_1h = np.full_like(close, np.nan)
+            macd_signal_1h = np.full_like(close, np.nan)
+            macd_hist_1h = np.full_like(close, 0.0)
+
+        # ------------------------------------------------------------------
+        # Формирование сигналов входа
+        # ------------------------------------------------------------------
+        if strategy_mode == 'classic':
+            # Лояльные условия: берём сделки, если MACD 1H не противоречит сигналу SAR
+            macd_hist_1h = np.nan_to_num(macd_hist_1h)
+            long_entry = sar_long_signal & (macd_hist_1h >= 0)
+            short_entry = sar_short_signal & (macd_hist_1h <= 0)
+        elif strategy_mode in ['optimized', 'trend_following', 'high_winrate']:
             # Основной тренд (EMA50 и EMA200)
             strong_uptrend = (close > ema50) & (ema50 > ema200) & (close > ema200)
             strong_downtrend = (close < ema50) & (ema50 < ema200) & (close < ema200)
@@ -137,7 +169,11 @@ class TechnicalIndicators:
         result['ema50'] = ema50
         result['ema200'] = ema200  # Добавил долгосрочный тренд
         result['rsi'] = rsi
-        result['macd'] = macd  # Добавил MACD
+        result['macd'] = macd  # MACD 15m
+        # Новые колонки с часовым MACD
+        result['macd_1h'] = macd_1h
+        result['macd_signal_1h'] = macd_signal_1h
+        result['macd_hist_1h'] = macd_hist_1h
         result['bb_upper'] = bb_upper  # Добавил Болинджер
         result['bb_lower'] = bb_lower
         result['volume_ratio'] = volume_ratio  # Добавил объемный анализ

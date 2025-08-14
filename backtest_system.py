@@ -185,7 +185,7 @@ class SARBacktestEngine:
 
         self.last_trade_time = timestamp
 
-        logger.info(f"Открыта {side} позиция по {symbol} по цене {entry_price:.4f} (SAR сигнал)")
+        logger.info(f"Открыта {side} позиция по {symbol} по цене {entry_price:.4f} (SAR сигнал) | PSAR={row.get('psar', float('nan')):.4f} | MACD1H={row.get('macd_1h', float('nan')):.4f} | MACD_HIST1H={row.get('macd_hist_1h', float('nan')):.4f}")
 
     def check_stop_take_levels(self, current_price: float, timestamp) -> None:
         """Проверка стоп-лосса и тейк-профита как подстраховку"""
