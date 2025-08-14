@@ -19,8 +19,12 @@ class TechnicalIndicators:
 
         strategy_mode = config.get('strategy_mode', 'optimized')
 
+        # Используем параметры из конфига для классической стратегии
+        psar_acceleration = config.get('increment', config.get('start', 0.02))
+        psar_maximum = config.get('maximum', 0.2)
+
         if strategy_mode == 'classic':
-            sar = talib.SAR(high, low, acceleration=0.02, maximum=0.2)
+            sar = talib.SAR(high, low, acceleration=psar_acceleration, maximum=psar_maximum)
         elif strategy_mode == 'contrarian':
             sar = talib.SAR(high, low, acceleration=0.02, maximum=0.2)
         elif strategy_mode == 'trend_following':
@@ -30,13 +34,13 @@ class TechnicalIndicators:
         else:  # optimized
             sar = talib.SAR(high, low, acceleration=0.01, maximum=0.1)
 
-        # Расчет дополнительных индикаторов для фильтрации
+        # Расчет дополнительных индикаторов для фильтрации (на текущем ТФ)
         atr = talib.ATR(high, low, close, timeperiod=14)
         ema20 = talib.EMA(close, timeperiod=20)
         ema50 = talib.EMA(close, timeperiod=50)
         ema200 = talib.EMA(close, timeperiod=200)  # Долгосрочный тренд
         rsi = talib.RSI(close, timeperiod=14)
-        macd, macd_signal, macd_hist = talib.MACD(close)  # Дополнительное подтверждение
+        macd, macd_signal, macd_hist = talib.MACD(close)  # Дополнительное подтверждение (на текущем ТФ)
         bb_upper, bb_middle, bb_lower = talib.BBANDS(close)  # Болинджер для волатильности
 
         if volume is not None:
@@ -52,24 +56,32 @@ class TechnicalIndicators:
         sar_trend_up_series = pd.Series(sar_trend_up, index=df.index)
         sar_trend_down_series = pd.Series(sar_trend_down, index=df.index)
 
+        # Избавляемся от FutureWarning: используем shift(..., fill_value=False) вместо fillна
         if strategy_mode == 'contrarian':
-            sar_long_signal = sar_trend_down_series & (
-                ~sar_trend_down_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
-            sar_short_signal = sar_trend_up_series & (
-                ~sar_trend_up_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
-            long_exit = sar_trend_up_series & (
-                ~sar_trend_up_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
-            short_exit = sar_trend_down_series & (
-                ~sar_trend_down_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
+            sar_long_signal = sar_trend_down_series & (~sar_trend_down_series.shift(1, fill_value=False))
+            sar_short_signal = sar_trend_up_series & (~sar_trend_up_series.shift(1, fill_value=False))
+            long_exit = sar_trend_up_series & (~sar_trend_up_series.shift(1, fill_value=False))
+            short_exit = sar_trend_down_series & (~sar_trend_down_series.shift(1, fill_value=False))
         else:
-            sar_long_signal = sar_trend_up_series & (
-                ~sar_trend_up_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
-            sar_short_signal = sar_trend_down_series & (
-                ~sar_trend_down_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
-            long_exit = sar_trend_down_series & (
-                ~sar_trend_down_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
-            short_exit = sar_trend_up_series & (
-                ~sar_trend_up_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
+            sar_long_signal = sar_trend_up_series & (~sar_trend_up_series.shift(1, fill_value=False))
+            sar_short_signal = sar_trend_down_series & (~sar_trend_down_series.shift(1, fill_value=False))
+            long_exit = sar_trend_down_series & (~sar_trend_down_series.shift(1, fill_value=False))
+            short_exit = sar_trend_up_series & (~sar_trend_up_series.shift(1, fill_value=False))
+
+        # Мягкий тренд-фильтр по MACD 1h (если уже добавлен в df заранее)
+        # Логика: доверяем SAR, но блокируем входы только при СИЛЬНОМ противоречии тренду 1h
+        if 'macd_hist_1h' in df.columns:
+            macd_hist_1h = df['macd_hist_1h'].astype(np.float64).values
+            close_1h = df['close_1h'].astype(np.float64).values if 'close_1h' in df.columns else close
+            # Допуск 0.05% от цены 1h: не строгий фильтр
+            loyal_tolerance = 0.0005 * close_1h
+            loyal_long_filter = macd_hist_1h >= (-loyal_tolerance)
+            loyal_short_filter = macd_hist_1h <= (loyal_tolerance)
+            loyal_long_filter_series = pd.Series(loyal_long_filter, index=df.index)
+            loyal_short_filter_series = pd.Series(loyal_short_filter, index=df.index)
+        else:
+            loyal_long_filter_series = pd.Series(True, index=df.index)
+            loyal_short_filter_series = pd.Series(True, index=df.index)
 
         if strategy_mode in ['optimized', 'trend_following', 'high_winrate']:
             # Основной тренд (EMA50 и EMA200)
@@ -124,8 +136,9 @@ class TechnicalIndicators:
                 long_entry = long_entry & bb_breakout_up
                 short_entry = short_entry & bb_breakout_down
         else:
-            long_entry = sar_long_signal
-            short_entry = sar_short_signal
+            # Классическая логика: доверяем SAR, при этом учитываем мягкий фильтр тренда 1h
+            long_entry = sar_long_signal & loyal_long_filter_series
+            short_entry = sar_short_signal & loyal_short_filter_series
 
         # Результат
         result = df.copy()
@@ -141,6 +154,11 @@ class TechnicalIndicators:
         result['bb_upper'] = bb_upper  # Добавил Болинджер
         result['bb_lower'] = bb_lower
         result['volume_ratio'] = volume_ratio  # Добавил объемный анализ
+
+        # Добавляем колонки с 1h MACD/ценой, если присутствуют в df
+        for col in ['macd_1h', 'macd_signal_1h', 'macd_hist_1h', 'close_1h']:
+            if col in df.columns:
+                result[col] = df[col].astype(np.float64)
 
         result['sar_long_entry'] = long_entry.values
         result['sar_short_entry'] = short_entry.values
