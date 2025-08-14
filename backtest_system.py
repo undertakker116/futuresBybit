@@ -51,6 +51,10 @@ class SARBacktestEngine:
         self.max_drawdown = 0.0
         self.last_trade_time = None
 
+        # Кэш данных старшего ТФ (1h)
+        self.htf_timeframe = '1h'
+        self.htf_data: Dict[str, pd.DataFrame] = {}
+
         # Создание директории для результатов
         if OUTPUT_CONFIG['save_results']:
             os.makedirs(OUTPUT_CONFIG['results_dir'], exist_ok=True)
@@ -74,18 +78,77 @@ class SARBacktestEngine:
                     validated_data[symbol] = df
 
             logger.info(f"Загружены данные для {len(validated_data)} символов")
+
+            # Дополнительно загружаем 1h для тренд-фильтра MACD
+            logger.info(f"Загрузка данных старшего ТФ ({self.htf_timeframe}) для MACD тренда...")
+            htf = self.data_fetcher.get_multiple_symbols(
+                SYMBOLS,
+                self.htf_timeframe,
+                START_DATE,
+                END_DATE
+            )
+            # Предобработка: расчет MACD на 1h и подготовка к последующему merge_asof
+            for symbol, df1h in htf.items():
+                if not df1h.empty:
+                    macd, macd_signal, macd_hist = self._compute_macd(df1h['close'].astype(np.float64).values)
+                    df1h = df1h.copy()
+                    df1h['macd_1h'] = macd
+                    df1h['macd_signal_1h'] = macd_signal
+                    df1h['macd_hist_1h'] = macd_hist
+                    df1h['close_1h'] = df1h['close'].astype(np.float64)
+                    # Оставляем только нужные колонки для объединения
+                    self.htf_data[symbol] = df1h[['macd_1h', 'macd_signal_1h', 'macd_hist_1h', 'close_1h']].copy()
+
             return validated_data
 
         except Exception as e:
             logger.error(f"Ошибка при загрузке данных: {e}")
             return {}
 
-    def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Расчет Parabolic SAR индикатора"""
+    def _compute_macd(self, close_values: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Вспомогательный метод для расчета MACD (использует talib, если доступен)."""
+        try:
+            import talib
+            macd, macd_signal, macd_hist = talib.MACD(close_values)
+            return macd, macd_signal, macd_hist
+        except Exception:
+            # Фоллбэк реализация MACD (12,26,9)
+            short_ema = pd.Series(close_values).ewm(span=12, adjust=False).mean().values
+            long_ema = pd.Series(close_values).ewm(span=26, adjust=False).mean().values
+            macd = short_ema - long_ema
+            macd_signal = pd.Series(macd).ewm(span=9, adjust=False).mean().values
+            macd_hist = macd - macd_signal
+            return macd, macd_signal, macd_hist
+
+    def _merge_htf_macd(self, symbol: str, df: pd.DataFrame) -> pd.DataFrame:
+        """Обогащает df (на 15m) колонками MACD 1h c помощью merge_asof."""
+        if symbol not in self.htf_data or self.htf_data[symbol].empty:
+            return df
+        df_15m = df.copy().sort_index()
+        df_15m['ts'] = df_15m.index
+        df1h = self.htf_data[symbol].copy().sort_index()
+        df1h['ts'] = df1h.index
+        merged = pd.merge_asof(
+            df_15m.reset_index(drop=True).sort_values('ts'),
+            df1h.reset_index(drop=True).sort_values('ts'),
+            on='ts',
+            direction='backward'
+        )
+        merged.set_index('ts', inplace=True)
+        # Сохраняем исходные OHLCV и добавленные 1h колонки
+        for col in ['macd_1h', 'macd_signal_1h', 'macd_hist_1h', 'close_1h']:
+            if col in merged.columns:
+                df_15m[col] = merged[col].astype(np.float64)
+        df_15m.index.name = df.index.name
+        return df_15m
+
+    def calculate_indicators(self, symbol: str, df: pd.DataFrame) -> pd.DataFrame:
+        """Расчет Parabolic SAR индикатора + добавление 1h MACD тренда"""
 
         try:
-            df = self.indicators.parabolic_sar_strategy(df, PSAR_CONFIG)
-            return df
+            df_enriched = self._merge_htf_macd(symbol, df)
+            df_with_ind = self.indicators.parabolic_sar_strategy(df_enriched, PSAR_CONFIG)
+            return df_with_ind
 
         except Exception as e:
             logger.error(f"Ошибка при расчете индикаторов: {e}")
@@ -137,13 +200,13 @@ class SARBacktestEngine:
         # Если есть открытая позиция по этому символу
         if self.current_position and self.current_position['symbol'] == symbol:
             if self.current_position['side'] == 'long' and row['sar_long_exit']:
-                self.close_position(row['close'], timestamp, 'sar_reversal')
+                self.close_position(row['close'], timestamp, 'sar_reversal', row)
             elif self.current_position['side'] == 'short' and row['sar_short_exit']:
-                self.close_position(row['close'], timestamp, 'sar_reversal')
+                self.close_position(row['close'], timestamp, 'sar_reversal', row)
 
             # Проверяем стоп-лосс и тейк-профит как подстраховку
             elif self.current_position:
-                self.check_stop_take_levels(row['close'], timestamp)
+                self.check_stop_take_levels(row['close'], timestamp, row)
 
         # Если нет позиции, проверяем входы
         elif not self.current_position:
@@ -185,9 +248,39 @@ class SARBacktestEngine:
 
         self.last_trade_time = timestamp
 
-        logger.info(f"Открыта {side} позиция по {symbol} по цене {entry_price:.4f} (SAR сигнал)")
+        # Логируем ключевые индикаторы при входе
+        if BACKTEST_CONFIG.get('detailed_logs', False):
+            indicators_snapshot = self._format_indicators_snapshot(row)
+            logger.info(
+                f"Открыта {side} позиция по {symbol} по цене {entry_price:.4f} (SAR сигнал) | {indicators_snapshot}"
+            )
+        else:
+            logger.info(f"Открыта {side} позиция по {symbol} по цене {entry_price:.4f} (SAR сигнал)")
 
-    def check_stop_take_levels(self, current_price: float, timestamp) -> None:
+    def _format_indicators_snapshot(self, row: pd.Series) -> str:
+        """Формирует краткий срез значений индикаторов для логов"""
+        def safe_float(v, nd=4):
+            try:
+                return f"{float(v):.{nd}f}"
+            except Exception:
+                return "nan"
+        parts = []
+        parts.append(f"psar={safe_float(row.get('psar'))}")
+        parts.append(f"rsi={safe_float(row.get('rsi'))}")
+        parts.append(f"atr={safe_float(row.get('atr'))}")
+        parts.append(f"ema50={safe_float(row.get('ema50'))}")
+        parts.append(f"ema200={safe_float(row.get('ema200'))}")
+        if 'macd' in row:
+            parts.append(f"macd15={safe_float(row.get('macd'))}")
+        if 'macd_1h' in row:
+            parts.append(f"macd1h={safe_float(row.get('macd_1h'))}")
+        if 'macd_hist_1h' in row:
+            parts.append(f"macd_hist1h={safe_float(row.get('macd_hist_1h'))}")
+        if 'volume_ratio' in row:
+            parts.append(f"vol_ratio={safe_float(row.get('volume_ratio'))}")
+        return ", ".join(parts)
+
+    def check_stop_take_levels(self, current_price: float, timestamp, row: Optional[pd.Series] = None) -> None:
         """Проверка стоп-лосса и тейк-профита как подстраховку"""
 
         if not self.current_position:
@@ -197,17 +290,17 @@ class SARBacktestEngine:
 
         # Проверяем стоп-лосс
         if position['side'] == 'long' and current_price <= position['stop_loss']:
-            self.close_position(current_price, timestamp, 'stop_loss')
+            self.close_position(current_price, timestamp, 'stop_loss', row)
         elif position['side'] == 'short' and current_price >= position['stop_loss']:
-            self.close_position(current_price, timestamp, 'stop_loss')
+            self.close_position(current_price, timestamp, 'stop_loss', row)
 
         # Проверяем тейк-профит
         elif position['side'] == 'long' and current_price >= position['take_profit']:
-            self.close_position(current_price, timestamp, 'take_profit')
+            self.close_position(current_price, timestamp, 'take_profit', row)
         elif position['side'] == 'short' and current_price <= position['take_profit']:
-            self.close_position(current_price, timestamp, 'take_profit')
+            self.close_position(current_price, timestamp, 'take_profit', row)
 
-    def close_position(self, exit_price: float, timestamp, exit_reason: str) -> None:
+    def close_position(self, exit_price: float, timestamp, exit_reason: str, row: Optional[pd.Series] = None) -> None:
         """Закрытие позиции"""
 
         if not self.current_position:
@@ -253,9 +346,18 @@ class SARBacktestEngine:
 
         self.trades.append(trade)
 
-        logger.info(f"Закрыта {position['side']} позиция по {position['symbol']} "
-                   f"вход: {position['entry_price']:.4f}, выход: {exit_price:.4f}, "
-                   f"P&L: {pnl:.2f} ({pnl_percent:.2f}%), причина: {exit_reason}")
+        # Лог закрытия с индикаторами
+        if BACKTEST_CONFIG.get('detailed_logs', False) and row is not None:
+            indicators_snapshot = self._format_indicators_snapshot(row)
+            logger.info(
+                f"Закрыта {position['side']} позиция по {position['symbol']} "
+                f"вход: {position['entry_price']:.4f}, выход: {exit_price:.4f}, "
+                f"P&L: {pnl:.2f} ({pnl_percent:.2f}%), причина: {exit_reason} | {indicators_snapshot}"
+            )
+        else:
+            logger.info(f"Закрыта {position['side']} позиция по {position['symbol']} "
+                       f"вход: {position['entry_price']:.4f}, выход: {exit_price:.4f}, "
+                       f"P&L: {pnl:.2f} ({pnl_percent:.2f}%), причина: {exit_reason}")
 
         # Очищаем текущую позицию
         self.current_position = None
@@ -357,7 +459,7 @@ class SARBacktestEngine:
             # Расчет индикаторов
             logger.info("Расчет Parabolic SAR...")
             for symbol in data:
-                data[symbol] = self.calculate_indicators(data[symbol])
+                data[symbol] = self.calculate_indicators(symbol, data[symbol])
 
             # Обработка SAR сигналов
             self.process_sar_signals(data)
@@ -369,7 +471,7 @@ class SARBacktestEngine:
                 if symbol in data:
                     last_timestamp = data[symbol].index[-1]
                     last_price = data[symbol].loc[last_timestamp, 'close']
-                    self.close_position(last_price, last_timestamp, 'end_of_period')
+                    self.close_position(last_price, last_timestamp, 'end_of_period', data[symbol].iloc[-1])
 
             # Расчет статистики
             trading_stats = self.calculate_trading_statistics()
@@ -402,7 +504,7 @@ class SARBacktestEngine:
         print(f"Таймфрейм: {PRIMARY_TIMEFRAME}")
         print(f"Начальный капитал: ${self.config['initial_capital']:,.2f}")
         print(f"Прогрев SAR: {PSAR_CONFIG['warmup_periods']} свечей")
-        print("Стратегия: Классическая SAR без фильтров")
+        print("Стратегия: Классическая SAR + мягкий тренд-фильтр MACD (1h)")
 
         if trading_stats:
             print(f"\nТОРГОВАЯ СТАТИСТИКА:")
