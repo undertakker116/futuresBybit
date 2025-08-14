@@ -3,6 +3,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import json
 import os
+from config import SYMBOLS, START_DATE, END_DATE
 
 def generate_realistic_demo_data(symbol: str, start_date: str, end_date: str, timeframe: str = "15m") -> pd.DataFrame:
     """Генерация реалистичных демо данных для тестирования"""
@@ -108,9 +109,9 @@ def generate_realistic_demo_data(symbol: str, start_date: str, end_date: str, ti
 def save_demo_data():
     """Сохранение демо данных для тестирования"""
     
-    symbols = ["FARTCOINUSDT", "SOLUSDT"]
-    start_date = "2025-05-01"
-    end_date = "2025-08-14"
+    symbols = SYMBOLS
+    start_date = START_DATE
+    end_date = END_DATE
     
     # Создаем директорию для данных
     os.makedirs("demo_data", exist_ok=True)

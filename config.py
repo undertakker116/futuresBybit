@@ -9,7 +9,13 @@
 # Символы для анализа
 SYMBOLS = [
     "FARTCOINUSDT",
-    "SOLUSDT"
+    "SOLUSDT",
+    "BTCUSDT",
+    "ETHUSDT",
+    "ADAUSDT",
+    "DOTUSDT",
+    "LINKUSDT",
+    "AVAXUSDT"
 ]
 
 # Таймфреймы (в минутах)

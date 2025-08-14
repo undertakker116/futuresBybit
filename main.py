@@ -8,6 +8,7 @@ import os
 import sys
 import logging
 from typing import Dict, Any
+import config
 
 # Настройка логирования
 logging.basicConfig(
@@ -25,11 +26,11 @@ def print_banner():
     print("\n" + "="*80)
     print("🚀 SAR БЭКТЕСТИНГ СИСТЕМА С MACD ФИЛЬТРАЦИЕЙ")
     print("="*80)
-    print("📅 Период: 2025-05-01 до 2025-08-14")
-    print("💎 Символы: FARTCOINUSDT, SOLUSDT")
-    print("⏰ Таймфрейм: 15 минут")
-    print("🎯 Стратегия: Классическая SAR + MACD тренд")
-    print("="*80 + "\n")
+    print(f"📅 Период: {config.START_DATE} до {config.END_DATE}")
+    print(f"💎 Символы: {', '.join(config.SYMBOLS)}")
+    print(f"⏰ Таймфрейм: {config.PRIMARY_TIMEFRAME}")
+    print(f"📊 Всего символов: {len(config.SYMBOLS)}")
+    print("="*80)
 
 def check_dependencies():
     """Проверка зависимостей"""

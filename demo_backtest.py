@@ -6,6 +6,7 @@
 # Импортируем все нужные модули
 from backtest_system import SARBacktestEngine
 from demo_data_fetcher import DemoDataFetcher
+import config
 import logging
 
 # Настройка логирования
@@ -22,21 +23,21 @@ def run_demo_backtest():
         logger.info("=== ДЕМО БЭКТЕСТИНГ SAR + MACD ===")
         
         # Создаем демо версию бэктестера
-        config = {
-            'initial_capital': 10000,
-            'risk_per_trade': 5.0,
-            'stop_loss_atr_multiplier_long': 2.5,
-            'stop_loss_atr_multiplier_short': 2.5,
-            'take_profit_atr_multiplier_long': 5.0,
-            'take_profit_atr_multiplier_short': 5.0,
-            'symbols': ["FARTCOINUSDT", "SOLUSDT"],
-            'timeframe': '15m',
-            'start_date': '2025-05-01',
-            'end_date': '2025-08-14'
+        config_dict = {
+            'initial_capital': config.RISK_CONFIG['initial_capital'],
+            'risk_per_trade': config.RISK_CONFIG['risk_per_trade'],
+            'stop_loss_atr_multiplier_long': config.RISK_CONFIG['stop_loss_atr_multiplier_long'],
+            'stop_loss_atr_multiplier_short': config.RISK_CONFIG['stop_loss_atr_multiplier_short'],
+            'take_profit_atr_multiplier_long': config.RISK_CONFIG['take_profit_atr_multiplier_long'],
+            'take_profit_atr_multiplier_short': config.RISK_CONFIG['take_profit_atr_multiplier_short'],
+            'symbols': config.SYMBOLS,
+            'timeframe': config.PRIMARY_TIMEFRAME,
+            'start_date': config.START_DATE,
+            'end_date': config.END_DATE
         }
         
         # Заменяем data_fetcher на демо версию
-        backtester = SARBacktestEngine(config)
+        backtester = SARBacktestEngine(config_dict)
         backtester.data_fetcher = DemoDataFetcher()
         
         # Запускаем бэктестинг

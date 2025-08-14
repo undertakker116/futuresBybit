@@ -242,23 +242,24 @@ class TechnicalIndicators:
         sar_trend_down_series = pd.Series(sar_trend_down, index=df.index)
 
         if strategy_mode == 'contrarian':
+            # Противоположная логика для контрарианской стратегии
             sar_long_signal = sar_trend_down_series & (
-                ~sar_trend_down_series.shift(1).fillna(False).astype(bool))
+                ~sar_trend_down_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
             sar_short_signal = sar_trend_up_series & (
-                ~sar_trend_up_series.shift(1).fillna(False).astype(bool))
+                ~sar_trend_up_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
             long_exit = sar_trend_up_series & (
-                ~sar_trend_up_series.shift(1).fillna(False).astype(bool))
+                ~sar_trend_up_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
             short_exit = sar_trend_down_series & (
-                ~sar_trend_down_series.shift(1).fillna(False).astype(bool))
+                ~sar_trend_down_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
         else:
             sar_long_signal = sar_trend_up_series & (
-                ~sar_trend_up_series.shift(1).fillna(False).astype(bool))
+                ~sar_trend_up_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
             sar_short_signal = sar_trend_down_series & (
-                ~sar_trend_down_series.shift(1).fillna(False).astype(bool))
+                ~sar_trend_down_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
             long_exit = sar_trend_down_series & (
-                ~sar_trend_down_series.shift(1).fillna(False).astype(bool))
+                ~sar_trend_down_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
             short_exit = sar_trend_up_series & (
-                ~sar_trend_up_series.shift(1).fillna(False).astype(bool))
+                ~sar_trend_up_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
 
         if strategy_mode in ['optimized', 'trend_following', 'high_winrate']:
             # Основной тренд (EMA50 и EMA200)
