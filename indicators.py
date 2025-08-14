@@ -54,22 +54,22 @@ class TechnicalIndicators:
 
         if strategy_mode == 'contrarian':
             sar_long_signal = sar_trend_down_series & (
-                ~sar_trend_down_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
+                ~sar_trend_down_series.shift(1).fillna(False).astype(bool))
             sar_short_signal = sar_trend_up_series & (
-                ~sar_trend_up_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
+                ~sar_trend_up_series.shift(1).fillna(False).astype(bool))
             long_exit = sar_trend_up_series & (
-                ~sar_trend_up_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
+                ~sar_trend_up_series.shift(1).fillna(False).astype(bool))
             short_exit = sar_trend_down_series & (
-                ~sar_trend_down_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
+                ~sar_trend_down_series.shift(1).fillna(False).astype(bool))
         else:
             sar_long_signal = sar_trend_up_series & (
-                ~sar_trend_up_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
+                ~sar_trend_up_series.shift(1).fillna(False).astype(bool))
             sar_short_signal = sar_trend_down_series & (
-                ~sar_trend_down_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
+                ~sar_trend_down_series.shift(1).fillna(False).astype(bool))
             long_exit = sar_trend_down_series & (
-                ~sar_trend_down_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
+                ~sar_trend_down_series.shift(1).fillna(False).astype(bool))
             short_exit = sar_trend_up_series & (
-                ~sar_trend_up_series.shift(1).infer_objects(copy=False).fillna(False).astype(bool))
+                ~sar_trend_up_series.shift(1).fillna(False).astype(bool))
 
         if strategy_mode in ['optimized', 'trend_following', 'high_winrate']:
             # Основной тренд (EMA50 и EMA200)
@@ -148,3 +148,33 @@ class TechnicalIndicators:
         result['sar_short_exit'] = short_exit.values
 
         return result
+
+    @staticmethod
+    def calculate_macd_trend(df: pd.DataFrame, fast_period: int = 12, slow_period: int = 26, signal_period: int = 9) -> Dict[str, Any]:
+        """
+        Расчет MACD индикатора для определения тренда на часовых данных
+        Возвращает MACD линию, сигнальную линию и гистограмму
+        """
+        close = df['close'].astype(np.float64).values
+        
+        # Расчет MACD
+        macd_line, macd_signal, macd_histogram = talib.MACD(close, 
+                                                           fastperiod=fast_period,
+                                                           slowperiod=slow_period, 
+                                                           signalperiod=signal_period)
+        
+        # Определение направления тренда
+        macd_trend_bullish = (macd_line > macd_signal) & (macd_histogram > 0)
+        macd_trend_bearish = (macd_line < macd_signal) & (macd_histogram < 0)
+        
+        # Сила тренда (увеличивающаяся гистограмма)
+        macd_strength_increasing = np.diff(macd_histogram, prepend=np.nan) > 0
+        
+        return {
+            'macd_line': pd.Series(macd_line, index=df.index),
+            'macd_signal': pd.Series(macd_signal, index=df.index),
+            'macd_histogram': pd.Series(macd_histogram, index=df.index),
+            'macd_trend_bullish': pd.Series(macd_trend_bullish, index=df.index),
+            'macd_trend_bearish': pd.Series(macd_trend_bearish, index=df.index),
+            'macd_strength_increasing': pd.Series(macd_strength_increasing, index=df.index)
+        }

@@ -80,16 +80,85 @@ class SARBacktestEngine:
             logger.error(f"Ошибка при загрузке данных: {e}")
             return {}
 
-    def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Расчет Parabolic SAR индикатора"""
+    def load_hourly_data(self) -> Dict[str, pd.DataFrame]:
+        """Загрузка часовых данных для MACD"""
 
         try:
+            hourly_data = {}
+            logger.info("Загрузка часовых данных для MACD...")
+
+            for symbol in SYMBOLS:
+                df_hourly = self.data_fetcher.get_historical_klines(
+                    symbol=symbol,
+                    timeframe="1h",
+                    start_date=START_DATE,
+                    end_date=END_DATE
+                )
+
+                if df_hourly is not None and not df_hourly.empty:
+                    hourly_data[symbol] = df_hourly
+                    logger.info(f"Загружены часовые данные для {symbol}")
+                else:
+                    logger.warning(f"Нет часовых данных для {symbol}")
+
+            return hourly_data
+
+        except Exception as e:
+            logger.error(f"Ошибка при загрузке часовых данных: {e}")
+            return {}
+
+    def calculate_indicators(self, df: pd.DataFrame, hourly_df: pd.DataFrame = None) -> pd.DataFrame:
+        """Расчет Parabolic SAR индикатора и добавление MACD тренда"""
+
+        try:
+            # Основные SAR индикаторы
             df = self.indicators.parabolic_sar_strategy(df, PSAR_CONFIG)
+            
+            # Добавляем MACD тренд с часовых данных (только для классической стратегии)
+            if hourly_df is not None and PSAR_CONFIG.get('strategy_mode') == 'classic':
+                macd_data = self.indicators.calculate_macd_trend(hourly_df)
+                
+                # Проецируем часовые MACD данные на 15-минутные свечи
+                df = self._project_hourly_to_15min(df, hourly_df, macd_data)
+            
             return df
 
         except Exception as e:
             logger.error(f"Ошибка при расчете индикаторов: {e}")
             return df
+
+    def _project_hourly_to_15min(self, df_15min: pd.DataFrame, df_hourly: pd.DataFrame, macd_data: Dict) -> pd.DataFrame:
+        """Проецирование часовых MACD данных на 15-минутные свечи"""
+        
+        try:
+            # Создаем копию 15-минутного DataFrame
+            df_result = df_15min.copy()
+            
+            # Инициализируем колонки MACD
+            df_result['macd_trend_bullish'] = False
+            df_result['macd_trend_bearish'] = False
+            df_result['macd_line'] = np.nan
+            df_result['macd_signal'] = np.nan
+            df_result['macd_histogram'] = np.nan
+            
+            # Проецируем данные
+            for i, row_15min in df_15min.iterrows():
+                # Находим соответствующую часовую свечу
+                hour_timestamp = row_15min.name.floor('h')
+                
+                if hour_timestamp in df_hourly.index:
+                    hourly_idx = df_hourly.index.get_loc(hour_timestamp)
+                    
+                    # Переносим MACD данные
+                    for macd_key in ['macd_trend_bullish', 'macd_trend_bearish', 'macd_line', 'macd_signal', 'macd_histogram']:
+                        if macd_key in macd_data and hourly_idx < len(macd_data[macd_key]):
+                            df_result.loc[i, macd_key] = macd_data[macd_key].iloc[hourly_idx]
+            
+            return df_result
+            
+        except Exception as e:
+            logger.error(f"Ошибка при проецировании MACD данных: {e}")
+            return df_15min
 
     def calculate_position_size(self, price: float) -> float:
         """Расчет размера позиции"""
@@ -147,14 +216,37 @@ class SARBacktestEngine:
 
         # Если нет позиции, проверяем входы
         elif not self.current_position:
+            
+            # Для классической стратегии добавляем MACD фильтрацию
+            if PSAR_CONFIG.get('strategy_mode') == 'classic':
+                # Лояльные условия для MACD фильтрации
+                macd_bullish_ok = not pd.isna(row.get('macd_trend_bullish', True)) and (
+                    row.get('macd_trend_bullish', False) or 
+                    row.get('macd_line', 0) > row.get('macd_signal', 0)  # Более лояльное условие
+                )
+                
+                macd_bearish_ok = not pd.isna(row.get('macd_trend_bearish', True)) and (
+                    row.get('macd_trend_bearish', False) or 
+                    row.get('macd_line', 0) < row.get('macd_signal', 0)  # Более лояльное условие
+                )
+                
+                # Вход в лонг по SAR с MACD подтверждением
+                if row['sar_long_entry'] and macd_bullish_ok:
+                    self.open_position(symbol, 'long', row['close'], timestamp, row)
 
-            # Вход в лонг по SAR
-            if row['sar_long_entry']:
-                self.open_position(symbol, 'long', row['close'], timestamp, row)
+                # Вход в шорт по SAR с MACD подтверждением  
+                elif row['sar_short_entry'] and macd_bearish_ok:
+                    self.open_position(symbol, 'short', row['close'], timestamp, row)
+                    
+            else:
+                # Обычная логика для других стратегий
+                # Вход в лонг по SAR
+                if row['sar_long_entry']:
+                    self.open_position(symbol, 'long', row['close'], timestamp, row)
 
-            # Вход в шорт по SAR
-            elif row['sar_short_entry']:
-                self.open_position(symbol, 'short', row['close'], timestamp, row)
+                # Вход в шорт по SAR
+                elif row['sar_short_entry']:
+                    self.open_position(symbol, 'short', row['close'], timestamp, row)
 
     def open_position(self, symbol: str, side: str, entry_price: float,
                      timestamp, row: pd.Series) -> None:
@@ -185,7 +277,36 @@ class SARBacktestEngine:
 
         self.last_trade_time = timestamp
 
+        # Детальное логирование индикаторов
+        sar_value = row.get('sar', 'N/A')
+        atr_value = row.get('atr', 'N/A')
+        rsi_value = row.get('rsi', 'N/A')
+        ema50_value = row.get('ema50', 'N/A')
+        ema200_value = row.get('ema200', 'N/A')
+        
+        # MACD индикаторы
+        macd_line = row.get('macd_line', 'N/A')
+        macd_signal_line = row.get('macd_signal', 'N/A')
+        macd_histogram = row.get('macd_histogram', 'N/A')
+        macd_bullish = row.get('macd_trend_bullish', False)
+        macd_bearish = row.get('macd_trend_bearish', False)
+        
         logger.info(f"Открыта {side} позиция по {symbol} по цене {entry_price:.4f} (SAR сигнал)")
+        # Форматируем числовые значения безопасно
+        sar_str = f"{sar_value:.4f}" if isinstance(sar_value, (int, float)) else str(sar_value)
+        atr_str = f"{atr_value:.4f}" if isinstance(atr_value, (int, float)) else str(atr_value)
+        rsi_str = f"{rsi_value:.2f}" if isinstance(rsi_value, (int, float)) else str(rsi_value)
+        macd_line_str = f"{macd_line:.4f}" if isinstance(macd_line, (int, float)) else str(macd_line)
+        macd_signal_str = f"{macd_signal_line:.4f}" if isinstance(macd_signal_line, (int, float)) else str(macd_signal_line)
+        macd_hist_str = f"{macd_histogram:.4f}" if isinstance(macd_histogram, (int, float)) else str(macd_histogram)
+        ema50_str = f"{ema50_value:.4f}" if isinstance(ema50_value, (int, float)) else str(ema50_value)
+        ema200_str = f"{ema200_value:.4f}" if isinstance(ema200_value, (int, float)) else str(ema200_value)
+        
+        logger.info(f"  SAR индикаторы: SAR={sar_str}, ATR={atr_str}, RSI={rsi_str}")
+        logger.info(f"  MACD тренд: Line={macd_line_str}, Signal={macd_signal_str}, Hist={macd_hist_str}")
+        logger.info(f"  MACD состояние: Bullish={macd_bullish}, Bearish={macd_bearish}")
+        logger.info(f"  Тренд: EMA50={ema50_str}, EMA200={ema200_str}, Цена={entry_price:.4f}")
+        logger.info(f"  Уровни: SL={stop_loss:.4f}, TP={take_profit:.4f}")
 
     def check_stop_take_levels(self, current_price: float, timestamp) -> None:
         """Проверка стоп-лосса и тейк-профита как подстраховку"""
@@ -354,10 +475,16 @@ class SARBacktestEngine:
                 logger.error("Не удалось загрузить данные")
                 return {}
 
+            # Загрузка часовых данных для MACD (только для классической стратегии)
+            hourly_data = {}
+            if PSAR_CONFIG.get('strategy_mode') == 'classic':
+                hourly_data = self.load_hourly_data()
+
             # Расчет индикаторов
             logger.info("Расчет Parabolic SAR...")
             for symbol in data:
-                data[symbol] = self.calculate_indicators(data[symbol])
+                hourly_df = hourly_data.get(symbol) if hourly_data else None
+                data[symbol] = self.calculate_indicators(data[symbol], hourly_df)
 
             # Обработка SAR сигналов
             self.process_sar_signals(data)
