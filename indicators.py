@@ -1,11 +1,200 @@
 import numpy as np
 import pandas as pd
 from typing import Dict, Any
-import talib
 
 
 class TechnicalIndicators:
     """Оптимизированная Parabolic SAR стратегия с несколькими подходами"""
+
+    @staticmethod
+    def _calculate_sar(high: np.ndarray, low: np.ndarray, acceleration: float = 0.02, maximum: float = 0.2) -> np.ndarray:
+        """Собственная реализация Parabolic SAR"""
+        length = len(high)
+        sar = np.full(length, np.nan)
+        af = acceleration
+        ep = 0.0
+        trend = 1  # 1 for uptrend, -1 for downtrend
+        
+        if length < 2:
+            return sar
+            
+        # Инициализация
+        sar[0] = low[0]
+        ep = high[0]
+        
+        for i in range(1, length):
+            # Расчет SAR
+            sar[i] = sar[i-1] + af * (ep - sar[i-1])
+            
+            # Проверка разворота тренда
+            if trend == 1:  # Восходящий тренд
+                if low[i] <= sar[i]:
+                    # Разворот в нисходящий тренд
+                    trend = -1
+                    sar[i] = ep
+                    ep = low[i]
+                    af = acceleration
+                else:
+                    # Продолжение восходящего тренда
+                    if high[i] > ep:
+                        ep = high[i]
+                        af = min(af + acceleration, maximum)
+                    # Корректировка SAR для восходящего тренда
+                    sar[i] = min(sar[i], low[i-1])
+                    if i > 1:
+                        sar[i] = min(sar[i], low[i-2])
+            else:  # Нисходящий тренд
+                if high[i] >= sar[i]:
+                    # Разворот в восходящий тренд
+                    trend = 1
+                    sar[i] = ep
+                    ep = high[i]
+                    af = acceleration
+                else:
+                    # Продолжение нисходящего тренда
+                    if low[i] < ep:
+                        ep = low[i]
+                        af = min(af + acceleration, maximum)
+                    # Корректировка SAR для нисходящего тренда
+                    sar[i] = max(sar[i], high[i-1])
+                    if i > 1:
+                        sar[i] = max(sar[i], high[i-2])
+        
+        return sar
+
+    @staticmethod
+    def _calculate_atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14) -> np.ndarray:
+        """Собственная реализация Average True Range"""
+        if len(high) < period:
+            return np.full(len(high), np.nan)
+            
+        # Расчет True Range
+        tr1 = high - low
+        tr2 = np.abs(high - np.roll(close, 1))
+        tr3 = np.abs(low - np.roll(close, 1))
+        
+        tr = np.maximum(tr1, np.maximum(tr2, tr3))
+        tr[0] = tr1[0]  # Первое значение
+        
+        # Расчет ATR как скользящее среднее TR
+        atr = np.full(len(tr), np.nan)
+        atr[period-1:] = pd.Series(tr).rolling(window=period).mean()[period-1:]
+        
+        return atr
+
+    @staticmethod
+    def _calculate_ema(data: np.ndarray, period: int) -> np.ndarray:
+        """Собственная реализация Exponential Moving Average"""
+        if len(data) < period:
+            return np.full(len(data), np.nan)
+            
+        alpha = 2.0 / (period + 1)
+        ema = np.full(len(data), np.nan)
+        
+        # Первое значение - простое среднее
+        ema[period-1] = np.mean(data[:period])
+        
+        # Расчет EMA
+        for i in range(period, len(data)):
+            ema[i] = alpha * data[i] + (1 - alpha) * ema[i-1]
+            
+        return ema
+
+    @staticmethod
+    def _calculate_rsi(data: np.ndarray, period: int = 14) -> np.ndarray:
+        """Собственная реализация Relative Strength Index"""
+        if len(data) < period + 1:
+            return np.full(len(data), np.nan)
+            
+        delta = np.diff(data)
+        gain = np.where(delta > 0, delta, 0)
+        loss = np.where(delta < 0, -delta, 0)
+        
+        # Первые значения как простое среднее
+        avg_gain = np.full(len(data), np.nan)
+        avg_loss = np.full(len(data), np.nan)
+        
+        avg_gain[period] = np.mean(gain[:period])
+        avg_loss[period] = np.mean(loss[:period])
+        
+        # Сглаженные средние
+        for i in range(period + 1, len(data)):
+            avg_gain[i] = (avg_gain[i-1] * (period - 1) + gain[i-1]) / period
+            avg_loss[i] = (avg_loss[i-1] * (period - 1) + loss[i-1]) / period
+        
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        
+        return rsi
+
+    @staticmethod
+    def _calculate_macd(data: np.ndarray, fast: int = 12, slow: int = 26, signal: int = 9) -> tuple:
+        """Собственная реализация MACD"""
+        if len(data) < slow + signal:
+            length = len(data)
+            return np.full(length, np.nan), np.full(length, np.nan), np.full(length, np.nan)
+            
+        ema_fast = TechnicalIndicators._calculate_ema(data, fast)
+        ema_slow = TechnicalIndicators._calculate_ema(data, slow)
+        
+        macd_line = ema_fast - ema_slow
+        
+        # Убираем NaN для расчета сигнальной линии
+        valid_macd = macd_line[~np.isnan(macd_line)]
+        if len(valid_macd) < signal:
+            return macd_line, np.full(len(macd_line), np.nan), np.full(len(macd_line), np.nan)
+        
+        signal_line_values = TechnicalIndicators._calculate_ema(valid_macd, signal)
+        
+        # Создаем полную сигнальную линию
+        full_signal = np.full(len(macd_line), np.nan)
+        valid_start = np.where(~np.isnan(macd_line))[0]
+        
+        if len(valid_start) > 0 and len(signal_line_values[~np.isnan(signal_line_values)]) > 0:
+            signal_start_idx = valid_start[0] + signal - 1
+            signal_values = signal_line_values[~np.isnan(signal_line_values)]
+            
+            if signal_start_idx < len(full_signal):
+                end_idx = min(signal_start_idx + len(signal_values), len(full_signal))
+                full_signal[signal_start_idx:end_idx] = signal_values[:end_idx-signal_start_idx]
+        
+        histogram = macd_line - full_signal
+        
+        return macd_line, full_signal, histogram
+
+    @staticmethod
+    def _calculate_bbands(data: np.ndarray, period: int = 20, std_dev: float = 2) -> tuple:
+        """Собственная реализация Bollinger Bands"""
+        if len(data) < period:
+            length = len(data)
+            return np.full(length, np.nan), np.full(length, np.nan), np.full(length, np.nan)
+            
+        # Простое скользящее среднее
+        sma = np.full(len(data), np.nan)
+        std = np.full(len(data), np.nan)
+        
+        for i in range(period-1, len(data)):
+            window = data[i-period+1:i+1]
+            sma[i] = np.mean(window)
+            std[i] = np.std(window, ddof=0)
+        
+        upper = sma + (std * std_dev)
+        lower = sma - (std * std_dev)
+        
+        return upper, sma, lower
+
+    @staticmethod
+    def _calculate_sma(data: np.ndarray, period: int) -> np.ndarray:
+        """Собственная реализация Simple Moving Average"""
+        if len(data) < period:
+            return np.full(len(data), np.nan)
+            
+        sma = np.full(len(data), np.nan)
+        
+        for i in range(period-1, len(data)):
+            sma[i] = np.mean(data[i-period+1:i+1])
+            
+        return sma
 
     @staticmethod
     def parabolic_sar_strategy(df: pd.DataFrame, config: Dict[str, Any]) -> pd.DataFrame:
@@ -20,27 +209,27 @@ class TechnicalIndicators:
         strategy_mode = config.get('strategy_mode', 'optimized')
 
         if strategy_mode == 'classic':
-            sar = talib.SAR(high, low, acceleration=0.02, maximum=0.2)
+            sar = TechnicalIndicators._calculate_sar(high, low, acceleration=0.02, maximum=0.2)
         elif strategy_mode == 'contrarian':
-            sar = talib.SAR(high, low, acceleration=0.02, maximum=0.2)
+            sar = TechnicalIndicators._calculate_sar(high, low, acceleration=0.02, maximum=0.2)
         elif strategy_mode == 'trend_following':
-            sar = talib.SAR(high, low, acceleration=0.01, maximum=0.12)
+            sar = TechnicalIndicators._calculate_sar(high, low, acceleration=0.01, maximum=0.12)
         elif strategy_mode == 'high_winrate':
-            sar = talib.SAR(high, low, acceleration=0.008, maximum=0.08)
+            sar = TechnicalIndicators._calculate_sar(high, low, acceleration=0.008, maximum=0.08)
         else:  # optimized
-            sar = talib.SAR(high, low, acceleration=0.01, maximum=0.1)
+            sar = TechnicalIndicators._calculate_sar(high, low, acceleration=0.01, maximum=0.1)
 
         # Расчет дополнительных индикаторов для фильтрации
-        atr = talib.ATR(high, low, close, timeperiod=14)
-        ema20 = talib.EMA(close, timeperiod=20)
-        ema50 = talib.EMA(close, timeperiod=50)
-        ema200 = talib.EMA(close, timeperiod=200)  # Долгосрочный тренд
-        rsi = talib.RSI(close, timeperiod=14)
-        macd, macd_signal, macd_hist = talib.MACD(close)  # Дополнительное подтверждение
-        bb_upper, bb_middle, bb_lower = talib.BBANDS(close)  # Болинджер для волатильности
+        atr = TechnicalIndicators._calculate_atr(high, low, close, period=14)
+        ema20 = TechnicalIndicators._calculate_ema(close, period=20)
+        ema50 = TechnicalIndicators._calculate_ema(close, period=50)
+        ema200 = TechnicalIndicators._calculate_ema(close, period=200)  # Долгосрочный тренд
+        rsi = TechnicalIndicators._calculate_rsi(close, period=14)
+        macd, macd_signal, macd_hist = TechnicalIndicators._calculate_macd(close)  # Дополнительное подтверждение
+        bb_upper, bb_middle, bb_lower = TechnicalIndicators._calculate_bbands(close)  # Болинджер для волатильности
 
         if volume is not None:
-            volume_sma = talib.SMA(volume, timeperiod=20)
+            volume_sma = TechnicalIndicators._calculate_sma(volume, period=20)
             volume_ratio = volume / volume_sma
         else:
             volume_ratio = np.ones_like(close)
@@ -158,10 +347,10 @@ class TechnicalIndicators:
         close = df['close'].astype(np.float64).values
         
         # Расчет MACD
-        macd_line, macd_signal, macd_histogram = talib.MACD(close, 
-                                                           fastperiod=fast_period,
-                                                           slowperiod=slow_period, 
-                                                           signalperiod=signal_period)
+        macd_line, macd_signal, macd_histogram = TechnicalIndicators._calculate_macd(close, 
+                                                                                     fast=fast_period,
+                                                                                     slow=slow_period, 
+                                                                                     signal=signal_period)
         
         # Определение направления тренда
         macd_trend_bullish = (macd_line > macd_signal) & (macd_histogram > 0)

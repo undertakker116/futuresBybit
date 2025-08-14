@@ -46,8 +46,10 @@ python3 demo_backtest.py
 ## 📦 Установка зависимостей
 
 ```bash
-pip3 install --break-system-packages pandas numpy ta-lib pybit matplotlib seaborn
+pip3 install --break-system-packages pandas numpy pybit matplotlib seaborn
 ```
+
+**Преимущества:** Больше не требуется сложная установка `ta-lib`! Все технические индикаторы реализованы собственными функциями.
 
 ## 📁 Структура проекта
 

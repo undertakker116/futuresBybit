@@ -36,7 +36,6 @@ def check_dependencies():
     try:
         import pandas
         import numpy
-        import talib
         import pybit
         import matplotlib
         import seaborn
@@ -44,7 +43,7 @@ def check_dependencies():
         return True
     except ImportError as e:
         logger.error(f"❌ Отсутствует зависимость: {e}")
-        logger.info("Установите зависимости: pip install pandas numpy ta-lib pybit matplotlib seaborn")
+        logger.info("Установите зависимости: pip install pandas numpy pybit matplotlib seaborn")
         return False
 
 def generate_demo_data():
