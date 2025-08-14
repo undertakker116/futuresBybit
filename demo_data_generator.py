@@ -109,8 +109,8 @@ def save_demo_data():
     """Сохранение демо данных для тестирования"""
     
     symbols = ["FARTCOINUSDT", "SOLUSDT"]
-    start_date = "2024-05-01"
-    end_date = "2024-08-13"
+    start_date = "2025-05-01"
+    end_date = "2025-08-14"
     
     # Создаем директорию для данных
     os.makedirs("demo_data", exist_ok=True)

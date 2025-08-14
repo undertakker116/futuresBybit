@@ -31,8 +31,8 @@ def run_demo_backtest():
             'take_profit_atr_multiplier_short': 5.0,
             'symbols': ["FARTCOINUSDT", "SOLUSDT"],
             'timeframe': '15m',
-            'start_date': '2024-05-01',
-            'end_date': '2024-08-13'
+            'start_date': '2025-05-01',
+            'end_date': '2025-08-14'
         }
         
         # Заменяем data_fetcher на демо версию
